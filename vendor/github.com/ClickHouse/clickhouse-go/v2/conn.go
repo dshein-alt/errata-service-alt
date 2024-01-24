@@ -21,13 +21,15 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"github.com/ClickHouse/clickhouse-go/v2/resources"
-	"github.com/pkg/errors"
+	"io"
 	"log"
 	"net"
 	"os"
 	"syscall"
 	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2/resources"
+	"github.com/pkg/errors"
 
 	"github.com/ClickHouse/ch-go/compress"
 	chproto "github.com/ClickHouse/ch-go/proto"
@@ -38,7 +40,7 @@ func dial(ctx context.Context, addr string, num int, opt *Options) (*connect, er
 	var (
 		err    error
 		conn   net.Conn
-		debugf = func(format string, v ...interface{}) {}
+		debugf = func(format string, v ...any) {}
 	)
 	switch {
 	case opt.DialContext != nil:
@@ -79,7 +81,7 @@ func dial(ctx context.Context, addr string, num int, opt *Options) (*connect, er
 			debugf:               debugf,
 			buffer:               new(chproto.Buffer),
 			reader:               chproto.NewReader(conn),
-			revision:             proto.ClientTCPProtocolVersion,
+			revision:             ClientTCPProtocolVersion,
 			structMap:            &structMap{},
 			compression:          compression,
 			connectedAt:          time.Now(),
@@ -100,8 +102,6 @@ func dial(ctx context.Context, addr string, num int, opt *Options) (*connect, er
 
 	// warn only on the first connection in the pool
 	if num == 1 && !resources.ClientMeta.IsSupportedClickHouseVersion(connect.server.Version) {
-		// send to debugger and console
-		fmt.Printf("WARNING: version %v of ClickHouse is not supported by this client\n", connect.server.Version)
 		debugf("[handshake] WARNING: version %v of ClickHouse is not supported by this client - client supports %v", connect.server.Version, resources.ClientMeta.SupportedVersions())
 	}
 	return connect, nil
@@ -112,7 +112,7 @@ type connect struct {
 	id                   int
 	opt                  *Options
 	conn                 net.Conn
-	debugf               func(format string, v ...interface{})
+	debugf               func(format string, v ...any)
 	server               ServerVersion
 	closed               bool
 	buffer               *chproto.Buffer
@@ -129,18 +129,27 @@ type connect struct {
 }
 
 func (c *connect) settings(querySettings Settings) []proto.Setting {
+	settingToProtoSetting := func(k string, v any) proto.Setting {
+		isCustom := false
+		if cv, ok := v.(CustomSetting); ok {
+			v = cv.Value
+			isCustom = true
+		}
+
+		return proto.Setting{
+			Key:       k,
+			Value:     v,
+			Important: !isCustom,
+			Custom:    isCustom,
+		}
+	}
+
 	settings := make([]proto.Setting, 0, len(c.opt.Settings)+len(querySettings))
 	for k, v := range c.opt.Settings {
-		settings = append(settings, proto.Setting{
-			Key:   k,
-			Value: v,
-		})
+		settings = append(settings, settingToProtoSetting(k, v))
 	}
 	for k, v := range querySettings {
-		settings = append(settings, proto.Setting{
-			Key:   k,
-			Value: v,
-		})
+		settings = append(settings, settingToProtoSetting(k, v))
 	}
 	return settings
 }
@@ -150,6 +159,11 @@ func (c *connect) isBad() bool {
 	case c.closed:
 		return true
 	}
+
+	if time.Since(c.connectedAt) >= c.opt.ConnMaxLifetime {
+		return true
+	}
+
 	if err := c.connCheck(); err != nil {
 		return true
 	}
@@ -199,7 +213,7 @@ func (c *connect) compressBuffer(start int) error {
 }
 
 func (c *connect) sendData(block *proto.Block, name string) error {
-	c.debugf("[send data] compression=%t", c.compression)
+	c.debugf("[send data] compression=%q", c.compression)
 	c.buffer.PutByte(proto.ClientData)
 	c.buffer.PutString(name)
 
@@ -227,9 +241,15 @@ func (c *connect) sendData(block *proto.Block, name string) error {
 		return err
 	}
 	if err := c.flush(); err != nil {
-		if errors.Is(err, syscall.EPIPE) {
+		switch {
+		case errors.Is(err, syscall.EPIPE):
 			c.debugf("[send data] pipe is broken, closing connection")
 			c.closed = true
+		case errors.Is(err, io.EOF):
+			c.debugf("[send data] unexpected EOF, closing connection")
+			c.closed = true
+		default:
+			c.debugf("[send data] unexpected error: %v", err)
 		}
 		return err
 	}
@@ -239,20 +259,29 @@ func (c *connect) sendData(block *proto.Block, name string) error {
 	return nil
 }
 
-func (c *connect) readData(packet byte, compressible bool) (*proto.Block, error) {
+func (c *connect) readData(ctx context.Context, packet byte, compressible bool) (*proto.Block, error) {
 	if _, err := c.reader.Str(); err != nil {
+		c.debugf("[read data] str error: %v", err)
 		return nil, err
 	}
 	if compressible && c.compression != CompressionNone {
 		c.reader.EnableCompression()
 		defer c.reader.DisableCompression()
 	}
-	block := proto.Block{Timezone: c.server.Timezone}
+
+	opts := queryOptions(ctx)
+	location := c.server.Timezone
+	if opts.userLocation != nil {
+		location = opts.userLocation
+	}
+
+	block := proto.Block{Timezone: location}
 	if err := block.Decode(c.reader, c.revision); err != nil {
+		c.debugf("[read data] decode error: %v", err)
 		return nil, err
 	}
 	block.Packet = packet
-	c.debugf("[read data] compression=%t. block: columns=%d, rows=%d", c.compression, len(block.Columns), block.Rows())
+	c.debugf("[read data] compression=%q. block: columns=%d, rows=%d", c.compression, len(block.Columns), block.Rows())
 	return &block, nil
 }
 

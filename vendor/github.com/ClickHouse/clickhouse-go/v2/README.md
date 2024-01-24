@@ -22,6 +22,7 @@ The client is tested against the currently [supported versions](https://github.c
 |----------------|-----------------|
 | => 2.0 <= 2.2  | 1.17, 1.18      |
 | >= 2.3         | 1.18.4+, 1.19   |
+| >= 2.14        | 1.20, 1.21      |
 
 ## Key features
 
@@ -34,7 +35,8 @@ The client is tested against the currently [supported versions](https://github.c
 * Connection pool
 * Failover and load balancing
 * [Bulk write support](examples/clickhouse_api/batch.go) (for `database/sql` [use](examples/std/batch.go) `begin->prepare->(in loop exec)->commit`)
-* [AsyncInsert](benchmark/v2/write-async/main.go)
+* [PrepareBatch options](#preparebatch-options)
+* [AsyncInsert](benchmark/v2/write-async/main.go) (more details in [Async insert](#async-insert) section)
 * Named and numeric placeholders support
 * LZ4/ZSTD compression support
 * External data
@@ -73,8 +75,8 @@ Support for the ClickHouse protocol advanced features using `Context`:
 			return d.DialContext(ctx, "tcp", addr)
 		},
 		Debug: true,
-		Debugf: func(format string, v ...interface{}) {
-			fmt.Printf(format, v)
+		Debugf: func(format string, v ...any) {
+			fmt.Printf(format+"\n", v...)
 		},
 		Settings: clickhouse.Settings{
 			"max_execution_time": 60,
@@ -82,13 +84,21 @@ Support for the ClickHouse protocol advanced features using `Context`:
 		Compression: &clickhouse.Compression{
 			Method: clickhouse.CompressionLZ4,
 		},
-		DialTimeout:      time.Duration(10) * time.Second,
+		DialTimeout:      time.Second * 30,
 		MaxOpenConns:     5,
 		MaxIdleConns:     5,
 		ConnMaxLifetime:  time.Duration(10) * time.Minute,
 		ConnOpenStrategy: clickhouse.ConnOpenInOrder,
 		BlockBufferSize: 10,
 		MaxCompressionBuffer: 10240,
+		ClientInfo: clickhouse.ClientInfo{ // optional, please see Client info section in the README.md
+			Products: []struct {
+				Name    string
+				Version string
+			}{
+				{Name: "my-app", Version: "0.1"},
+			},
+		},
 	})
 	if err != nil {
 		return err
@@ -114,13 +124,21 @@ conn := clickhouse.OpenDB(&clickhouse.Options{
 	Settings: clickhouse.Settings{
 		"max_execution_time": 60,
 	},
-	DialTimeout: 5 * time.Second,
+	DialTimeout: time.Second * 30,
 	Compression: &clickhouse.Compression{
-		clickhouse.CompressionLZ4,
+		Method: clickhouse.CompressionLZ4,
 	},
 	Debug: true,
 	BlockBufferSize: 10,
 	MaxCompressionBuffer: 10240,
+	ClientInfo: clickhouse.ClientInfo{ // optional, please see Client info section in the README.md
+		Products: []struct {
+			Name    string
+			Version string
+		}{
+			{Name: "my-app", Version: "0.1"},
+		},
+	},
 })
 conn.SetMaxIdleConns(5)
 conn.SetMaxOpenConns(10)
@@ -132,7 +150,7 @@ conn.SetConnMaxLifetime(time.Hour)
 * hosts  - comma-separated list of single address hosts for load-balancing and failover
 * username/password - auth credentials
 * database - select the current default database
-* dial_timeout -  a duration string is a possibly signed sequence of decimal numbers, each with optional fraction and a unit suffix such as "300ms", "1s". Valid time units are "ms", "s", "m".
+* dial_timeout -  a duration string is a possibly signed sequence of decimal numbers, each with optional fraction and a unit suffix such as "300ms", "1s". Valid time units are "ms", "s", "m". (default 30s)
 * connection_open_strategy - round_robin/in_order (default in_order).
     * round_robin      - choose a round-robin server from the set
     * in_order    - first live server is chosen in specified order
@@ -146,6 +164,7 @@ conn.SetConnMaxLifetime(time.Hour)
 * block_buffer_size - size of block buffer (default 2)
 * read_timeout - a duration string is a possibly signed sequence of decimal numbers, each with optional fraction and a unit suffix such as "300ms", "1s". Valid time units are "ms", "s", "m" (default 5m).
 * max_compression_buffer - max size (bytes) of compression buffer during column by column compression (default 10MiB)
+* client_info_product - optional list (comma separated) of product name and version pair separated with `/`. This value will be pass a part of client info. e.g. `client_info_product=my_app/1.0,my_module/0.1` More details in [Client info](#client-info) section.
 
 SSL/TLS parameters:
 
@@ -162,7 +181,7 @@ clickhouse://username:password@host1:9000,host2:9000/database?dial_timeout=200ms
 
 The native format can be used over the HTTP protocol. This is useful in scenarios where users need to proxy traffic e.g. using [ChProxy](https://www.chproxy.org/) or via load balancers.
 
-This can be achieved by modifying the DSN to specify the http protocol.
+This can be achieved by modifying the DSN to specify the HTTP protocol.
 
 ```sh
 http://host1:8123,host2:8123/database?dial_timeout=200ms&max_execution_time=60
@@ -181,13 +200,15 @@ conn := clickhouse.OpenDB(&clickhouse.Options{
 	Settings: clickhouse.Settings{
 		"max_execution_time": 60,
 	},
-	DialTimeout: 5 * time.Second,
+	DialTimeout: 30 * time.Second,
 	Compression: &clickhouse.Compression{
 		Method: clickhouse.CompressionLZ4,
 	},
-	Interface: clickhouse.HttpInterface,
+	Protocol:  clickhouse.HTTP,
 })
 ```
+
+**Note**: using HTTP protocol is possible only with `database/sql` interface.
 
 ## Compression
 
@@ -236,10 +257,38 @@ conn := clickhouse.OpenDB(&clickhouse.Options{
 		Username: "default",
 		Password: "",
 	},
-	Interface: clickhouse.HttpsInterface,
+	Protocol:  clickhouse.HTTP,
 })
 ```
 
+## Client info
+
+
+Clickhouse-go implements [client info](https://docs.google.com/document/d/1924Dvy79KXIhfqKpi1EBVY3133pIdoMwgCQtZ-uhEKs/edit#heading=h.ah33hoz5xei2) as a part of language client specification. `client_name` for native protocol and HTTP `User-Agent` header values are provided with the exact client info string.
+
+Users can extend client options with additional product information included in client info. This might be useful for analysis [on a server side](https://clickhouse.com/docs/en/operations/system-tables/query_log/).
+
+Order is the highest abstraction to the lowest level implementation left to right.
+
+Usage examples for [native API](examples/clickhouse_api/client_info.go) and [database/sql](examples/std/client_info.go)  are provided.
+
+## Async insert
+
+[Asynchronous insert](https://clickhouse.com/docs/en/optimize/asynchronous-inserts#enabling-asynchronous-inserts) is supported via dedicated `AsyncInsert` method. This allows to insert data with a non-blocking call.
+Effectively, it controls a `async_insert` setting for the query. 
+
+### Using with batch API
+
+Using native protocol, asynchronous insert does not support batching. It means, only inline query data is supported. Please see an example [here](examples/std/async.go).
+
+HTTP protocol supports batching. It can be enabled by setting `async_insert` when using standard `Prepare` method.
+
+For more details please see [asynchronous inserts](https://clickhouse.com/docs/en/optimize/asynchronous-inserts#enabling-asynchronous-inserts) documentation.
+
+## PrepareBatch options
+
+Available options:
+- [WithReleaseConnection](examples/clickhouse_api/batch_release_connection.go) - after PrepareBatch connection will be returned to the pool. It can help you make a long-lived batch.
 
 ## Benchmark
 
@@ -265,12 +314,14 @@ go get -u github.com/ClickHouse/clickhouse-go/v2
 ### native interface
 
 * [batch](examples/clickhouse_api/batch.go)
+* [batch with release connection](examples/clickhouse_api/batch_release_connection.go)
 * [async insert](examples/clickhouse_api/async.go)
 * [batch struct](examples/clickhouse_api/append_struct.go)
 * [columnar](examples/clickhouse_api/columnar_insert.go)
 * [scan struct](examples/clickhouse_api/scan_struct.go)
 * [query parameters](examples/clickhouse_api/query_parameters.go) (deprecated in favour of native query parameters)
 * [bind params](examples/clickhouse_api/bind.go) (deprecated in favour of native query parameters)
+* [client info](examples/clickhouse_api/client_info.go)
 
 ### std `database/sql` interface
 
@@ -279,6 +330,7 @@ go get -u github.com/ClickHouse/clickhouse-go/v2
 * [open db](examples/std/connect.go)
 * [query parameters](examples/std/query_parameters.go)
 * [bind params](examples/std/bind.go) (deprecated in favour of native query parameters)
+* [client info](examples/std/client_info.go)
 
 ## ClickHouse alternatives - ch-go
 

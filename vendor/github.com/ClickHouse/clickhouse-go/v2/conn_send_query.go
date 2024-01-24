@@ -24,17 +24,20 @@ import (
 // Connection::sendQuery
 // https://github.com/ClickHouse/ClickHouse/blob/master/src/Client/Connection.cpp
 func (c *connect) sendQuery(body string, o *QueryOptions) error {
-	c.debugf("[send query] compression=%t %s", c.compression, body)
+	c.debugf("[send query] compression=%q %s", c.compression, body)
 	c.buffer.PutByte(proto.ClientQuery)
 	q := proto.Query{
-		ID:             o.queryID,
-		Body:           body,
-		Span:           o.span,
-		QuotaKey:       o.quotaKey,
-		Compression:    c.compression != CompressionNone,
-		InitialAddress: c.conn.LocalAddr().String(),
-		Settings:       c.settings(o.settings),
-		Parameters:     parametersToProtoParameters(o.parameters),
+		ClientTCPProtocolVersion: ClientTCPProtocolVersion,
+		ClientName:               c.opt.ClientInfo.String(),
+		ClientVersion:            proto.Version{ClientVersionMajor, ClientVersionMinor, ClientVersionPatch}, //nolint:govet
+		ID:                       o.queryID,
+		Body:                     body,
+		Span:                     o.span,
+		QuotaKey:                 o.quotaKey,
+		Compression:              c.compression != CompressionNone,
+		InitialAddress:           c.conn.LocalAddr().String(),
+		Settings:                 c.settings(o.settings),
+		Parameters:               parametersToProtoParameters(o.parameters),
 	}
 	if err := q.Encode(c.buffer, c.revision); err != nil {
 		return err
