@@ -47,10 +47,7 @@ func InitDB() (*DB, error) {
 
 func (db *DB) CheckConnect() bool {
 	status := db.db.Ping()
-	if status == nil {
-		return true
-	}
-	return false
+	return status == nil
 }
 
 func (db *DB) GetErrata(errata_id string) (*Errata, int, error) {
@@ -73,11 +70,11 @@ func (db *DB) UpdateErrata(errata_id string, update uint32) (*Errata, int, error
 		return nil, http.StatusNotFound, err
 	}
 	if errata.UpdateCount != update {
-		return nil, http.StatusNotFound, errors.New("version don`t match")
+		return nil, http.StatusNotFound, errors.New("version doesn`t match")
 	}
 	errata.UpdateCount += 1
 	errata.ChangeDate = time.Now()
-	_, err := db.db.Exec(fmt.Sprintf("INSERT INTO %s VALUES ($1,$2, $3, $4, $5, $6, $7)", tableName),
+	_, err := db.db.Exec(fmt.Sprintf("INSERT INTO %s VALUES ($1, $2, $3, $4, $5, $6, $7)", tableName),
 		errata.id, errata.Prefix, errata.Year, errata.Num,
 		errata.UpdateCount, errata.CreationDate, errata.ChangeDate)
 	if err != nil {
@@ -101,13 +98,31 @@ func (db *DB) GenerateErrata(prefix string, year uint32) (*Errata, int, error) {
 	current = last + 1
 	id := utils.SHA1(prefix + "-" + strconv.FormatUint(uint64(year), 10) + "-" + strconv.FormatUint(uint64(current), 10))
 	errata := CreateErrata(id, prefix, year, current, 1, time.Now(), time.Now())
-	_, err := db.db.Exec(fmt.Sprintf("INSERT INTO %s VALUES ($1,$2, $3, $4, $5, $6, $7)", tableName),
+	_, err := db.db.Exec(fmt.Sprintf("INSERT INTO %s VALUES ($1, $2, $3, $4, $5, $6, $7)", tableName),
 		errata.id, errata.Prefix, errata.Year, errata.Num,
 		errata.UpdateCount, errata.CreationDate, errata.ChangeDate)
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
 	}
 	return errata, http.StatusOK, nil
+}
+
+func (db *DB) DeleteErrata(errata_id string, update uint32) (*Errata, int, error) {
+	db.mtx.Lock()
+	defer db.mtx.Unlock()
+	var errata Errata
+	row := db.db.QueryRow(fmt.Sprintf("SELECT * FROM %s WHERE errata_id = $1 AND errata_update_count = (SELECT max(errata_update_count) FROM %s WHERE errata_id= $1)", tableName, tableName), errata_id)
+	if err := row.Scan(&errata.id, &errata.Prefix, &errata.Year, &errata.Num, &errata.UpdateCount, &errata.CreationDate, &errata.ChangeDate); err != nil {
+		return nil, http.StatusNotFound, err
+	}
+	if errata.UpdateCount != update {
+		return nil, http.StatusNotFound, errors.New("version doesn`t match")
+	}
+	_, err := db.db.Exec(fmt.Sprintf("DELETE FROM %s WHERE errata_id = $1 AND errata_update_count = $2", tableName), errata.id, errata.UpdateCount)
+	if err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+	return &errata, http.StatusOK, nil
 }
 
 func (db *DB) Close() {

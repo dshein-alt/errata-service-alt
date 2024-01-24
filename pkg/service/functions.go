@@ -65,6 +65,27 @@ func (service *ServiceT) UpdateErrata(errata string) (*db.Errata, int, error) {
 	return service.db.UpdateErrata(errata_id, update)
 }
 
+func (service *ServiceT) DeleteErrata(errata string) (*db.Errata, int, error) {
+	status := service.db.CheckConnect()
+	if !status {
+		time.Sleep(time.Second)
+		err := service.tryConnect()
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		status = service.db.CheckConnect()
+		if !status {
+			return nil, http.StatusInternalServerError, errors.New("connection to the database failed")
+		}
+	}
+
+	errata_id, update, err := db.ErrataToID(errata)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+	return service.db.DeleteErrata(errata_id, update)
+}
+
 func (service *ServiceT) CloseConnect() {
 	service.db.Close()
 }

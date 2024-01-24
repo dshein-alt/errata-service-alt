@@ -21,6 +21,7 @@ func Run() error {
 	http.HandleFunc("/register", registerHandler)
 	http.HandleFunc("/update", updateHandler)
 	http.HandleFunc("/check", checkHandler)
+	http.HandleFunc("/discard", discardHandler)
 	http.HandleFunc("/version", versionHandler)
 
 	infoLogger.Printf("Service '%s' started at %d", configurator.Config.Name, configurator.Config.Port)
