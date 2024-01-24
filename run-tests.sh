@@ -110,7 +110,7 @@ retcode=`curl -Is -X 'POST' http://$HOSTIP:$TEST_PORT/version | head -n 1 | cut 
 ## test version the same with latest GIT tag
 errata_git_version=`git tag --sort=-version:refname | head -n 1`
 errata_version=`curl -s -X 'GET' http://$HOSTIP:$TEST_PORT/version | jq -r '.version'` || fatal "Failed to get data from service"
-[[ $errata_version == $errata_git_version ]] && ok "Version test #3: PASSED" || fatal "Version test #3: FAILED [$errata_version != $errata_git_version]"
+[[ $errata_version == $errata_git_version ]] && ok "Version test #3: PASSED [$errata_version]" || fatal "Version test #3: FAILED [$errata_version != $errata_git_version]"
 
 
 # test `/register` route
@@ -202,7 +202,49 @@ new_new_errata_id=`echo $_updated | jq -r '.errata.id'`
 
 _updated=`curl -s -X 'POST' http://$HOSTIP:$TEST_PORT/update?name=$errata_id` || fatal "Failed to get data from service"
 new_errata_id=`echo $_updated | jq -r '.errata.id'`
-[[ -z "$new_errata_id"  ]] && ok "Update test #9: PASSED" || fatal "Update test #9: FALIED"
+[[ -z "$new_errata_id" ]] && ok "Update test #9: PASSED" || fatal "Update test #9: FALIED"
+
+# test `/discard` route
+## test HTTP method and arguments validation
+retcode=`curl -Is -X 'GET' http://$HOSTIP:$TEST_PORT/discard?name=TEST-TEST-2222-5687-9 | head -n 1 | cut -d' ' -f2`
+[[ $retcode == "405" ]] && ok "Discard test #1: PASSED" || fatal "Discard test #1: FALIED [service returned $retcode]"
+
+retcode=`curl -Is -X 'PUT' http://$HOSTIP:$TEST_PORT/discard?name=TEST-TEST-2222-5687-9 | head -n 1 | cut -d' ' -f2`
+[[ $retcode == "405" ]] && ok "Discard test #2: PASSED" || fatal "Discard test #2: FALIED [service returned $retcode]"
+
+retcode=`curl -Is -X 'POST' http://$HOSTIP:$TEST_PORT/discard?name=TEST-1234-5678-9 | head -n 1 | cut -d' ' -f2`
+[[ $retcode == "400" ]] && ok "Discard test #3: PASSED" || fatal "Discard test #3: FALIED [service returned $retcode]"
+
+retcode=`curl -Is -X 'POST' http://$HOSTIP:$TEST_PORT/discard | head -n 1 | cut -d' ' -f2`
+[[ $retcode == "400" ]] && ok "Discard test #4: PASSED" || fatal "Discard test #4: FALIED [service returned $retcode]"
+
+retcode=`curl -Is -X 'POST' http://$HOSTIP:$TEST_PORT/discard?prefix=TEST-2222-5678-9 | head -n 1 | cut -d' ' -f2`
+[[ $retcode == "400" ]] && ok "Discard test #5: PASSED" || fatal "Discard test #5: FALIED [service returned $retcode]"
+
+## test errata discard
+retcode=`curl -Is -X 'POST' http://$HOSTIP:$TEST_PORT/discard?name=TEST-TEST-2222-5687-9 | head -n 1 | cut -d' ' -f2`
+[[ $retcode == "404" ]] && ok "Discard test #6: PASSED" || fatal "Discard test #6: FALIED [service returned $retcode]"
+
+errata_id_1="TEST-TEST-2345-1000-3"
+errata_id_2="TEST-TEST-2345-1000-2"
+errata_id_3="TEST-TEST-2345-1000-1"
+
+_updated=`curl -s -X 'POST' http://$HOSTIP:$TEST_PORT/discard?name=$errata_id_1` || fatal "Failed to get data from service"
+res_errata_id=`echo $_updated | jq -r '.errata.id'`
+[[ $res_errata_id == $errata_id_1 ]] && ok "Discard test #7: PASSED [$res_errata_id]" || fatal "Discrad test #7: FALIED [discard errata]"
+
+_updated=`curl -s -X 'POST' http://$HOSTIP:$TEST_PORT/discard?name=$errata_id_2` || fatal "Failed to get data from service"
+res_errata_id=`echo $_updated | jq -r '.errata.id'`
+[[ $res_errata_id == $errata_id_2 ]] && ok "Discard test #8: PASSED [$res_errata_id]" || fatal "Discrad test #7: FALIED [discard errata]"
+
+_updated=`curl -s -X 'POST' http://$HOSTIP:$TEST_PORT/discard?name=$errata_id_3` || fatal "Failed to get data from service"
+res_errata_id=`echo $_updated | jq -r '.errata.id'`
+[[ $res_errata_id == $errata_id_3 ]] && ok "Discard test #9: PASSED [$res_errata_id]" || fatal "Discrad test #7: FALIED [discard errata]"
+
+_updated=`curl -s -X 'POST' http://$HOSTIP:$TEST_PORT/discard?name=$errata_id_3` || fatal "Failed to get data from service"
+res_errata_id=`echo $_updated | jq -r '.errata.id'`
+[[ -z "$new_errata_id" ]] && ok "Discard test #10: PASSED" || fatal "Discrad test #7: FALIED [discard errata]"
+
 
 # clean-up
 clean_up
